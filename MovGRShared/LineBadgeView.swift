@@ -15,24 +15,85 @@ public struct LineBadgeView: View {
     }
 
     public var body: some View {
-        if UIImage(named: "linea-\(id)") != nil {
-            Image("linea-\(id)")
-                .resizable()
-                .interpolation(.high)
-                .scaledToFill()
-                .padding(-size * 0.1)
-                .frame(width: size, height: size)
-                .clipShape(Circle())
-                .accessibilityLabel(id)
-        } else {
-            Text(id)
-                .font(.system(size: size < 28 ? 10 : 12, weight: .bold, design: .rounded))
-                .minimumScaleFactor(0.55)
-                .lineLimit(1)
-                .foregroundStyle(Color(hex: textColorHex, fallback: .white))
-                .frame(width: size, height: size)
-                .background(Color(hex: colorHex, fallback: Color(.systemGray4)), in: Circle())
+        let cleaned = (colorHex ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            .uppercased()
+        let isLight = cleaned == "FFFFFF" || cleaned == "FFF"
+        let fill = Color(hex: colorHex, fallback: Color(red: 0.42, green: 0.42, blue: 0.46))
+        let wide = id.count > 3
+        let width = wide ? max(size, CGFloat(id.count) * size * 0.34 + 10) : size
+        ZStack {
+            Group {
+                if wide {
+                    RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
+                        .fill(fill)
+                } else {
+                    Circle().fill(fill)
+                }
+            }
+            if UIImage(named: "linea-\(id)") != nil {
+                Image("linea-\(id)")
+                    .resizable()
+                    .renderingMode(.original)
+                    .interpolation(.high)
+                    .scaledToFill()
+                    .padding(-size * 0.1)
+            } else {
+                Text(id)
+                    .font(.system(size: size < 28 ? 9 : (wide ? 9 : 12), weight: .bold, design: .rounded))
+                    .minimumScaleFactor(0.4)
+                    .lineLimit(1)
+                    .padding(.horizontal, 3)
+                    .foregroundStyle(Color(hex: textColorHex, fallback: .white))
+            }
         }
+        .frame(width: width, height: size)
+        .overlay {
+            if isLight {
+                Group {
+                    if wide {
+                        RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
+                            .strokeBorder(BrandColor.ctagr.opacity(0.85), lineWidth: 1.5)
+                    } else {
+                        Circle().strokeBorder(BrandColor.ctagr.opacity(0.85), lineWidth: 1.5)
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: wide ? size * 0.32 : size / 2, style: .continuous))
+        .compositingGroup()
+        .accessibilityLabel(id)
+    }
+}
+
+public struct StopCodePill: View {
+    public var code: String
+    public var compact = false
+    public var consorcio = false
+
+    public init(code: String, compact: Bool = false, consorcio: Bool = false) {
+        self.code = code
+        self.compact = compact
+        self.consorcio = consorcio
+    }
+
+    public var body: some View {
+        Text(code)
+            .font(.system(size: compact ? 11 : 13, weight: .bold, design: .rounded))
+            .monospacedDigit()
+            .padding(.horizontal, compact ? 6 : 8)
+            .padding(.vertical, compact ? 3 : 4)
+            .foregroundStyle(consorcio ? BrandColor.ctagr : Color.primary)
+            .background {
+                Capsule()
+                    .fill(consorcio ? BrandColor.ctagrFill : Color.secondary.opacity(0.2))
+            }
+            .overlay {
+                if consorcio {
+                    Capsule().strokeBorder(BrandColor.ctagr.opacity(0.85), lineWidth: 1)
+                }
+            }
+            .accessibilityLabel("Parada \(code)")
     }
 }
 

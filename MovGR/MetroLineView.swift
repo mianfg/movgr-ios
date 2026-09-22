@@ -35,6 +35,7 @@ struct MetroLineView: View {
                 Spacer()
                 LiveDot(isOnline: isOnline)
             }
+            .padding(.top, 2)
             controls
         }
     }
@@ -210,6 +211,8 @@ private struct MetroStationRow: View {
                     MinutesBadge(minutes: item.minutos)
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
         }
     }
 }

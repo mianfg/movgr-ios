@@ -4,11 +4,13 @@ import Foundation
 public enum TransportKind: String, Codable, Hashable, Sendable, CaseIterable {
     case bus
     case metro
+    case ctagr
 
     public var title: String {
         switch self {
         case .bus: "Bus"
         case .metro: "Metro"
+        case .ctagr: "Consorcio"
         }
     }
 }
@@ -113,14 +115,85 @@ public struct LineaMetroDetail: Codable, Hashable, Sendable, Identifiable {
     public var shapes: [RouteShape]
 }
 
+public struct LineaCtagr: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var nombre: String?
+    public var color: String?
+    public var textColor: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, nombre, color
+        case textColor = "text_color"
+    }
+}
+
+public struct VehiculoCtagr: Codable, Hashable, Sendable {
+    public var linea: String
+    public var sentido: Int
+    public var lat: Double?
+    public var lon: Double?
+    public var visto: String?
+}
+
+public struct ProximoCtagr: Codable, Hashable, Sendable {
+    public var linea: LineaCtagr
+    public var destino: String
+    public var hora: String
+    public var minutos: Int
+    public var sentido: Int?
+    public var enRuta: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case linea, destino, hora, minutos, sentido
+        case enRuta = "en_ruta"
+    }
+}
+
+public struct ParadaCtagr: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var nombre: String
+    public var municipio: String?
+    public var nucleo: String?
+    public var lat: Double?
+    public var lon: Double?
+    public var lineas: [String]?
+
+    public var coordinate: CLLocationCoordinate2D? {
+        guard let lat, let lon else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+}
+
+public struct LlegadasCtagr: Codable, Hashable, Sendable {
+    public var parada: ParadaCtagr
+    public var proximos: [ProximoCtagr]
+    public var vehiculos: [VehiculoCtagr]
+}
+
+public struct LineaCtagrDetail: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var nombre: String?
+    public var color: String?
+    public var textColor: String?
+    public var shapes: [RouteShape]
+    public var vehiculos: [VehiculoCtagr]
+
+    enum CodingKeys: String, CodingKey {
+        case id, nombre, color, shapes, vehiculos
+        case textColor = "text_color"
+    }
+}
+
 public enum SelectedStop: Hashable, Sendable, Identifiable {
     case bus(ParadaBus)
     case metro(ParadaMetro)
+    case ctagr(ParadaCtagr)
 
     public var id: String {
         switch self {
         case .bus(let stop): "bus-\(stop.id)"
         case .metro(let stop): "metro-\(stop.id)"
+        case .ctagr(let stop): "ctagr-\(stop.id)"
         }
     }
 
@@ -128,6 +201,7 @@ public enum SelectedStop: Hashable, Sendable, Identifiable {
         switch self {
         case .bus(let stop): stop.nombre
         case .metro(let stop): stop.nombre
+        case .ctagr(let stop): stop.nombre
         }
     }
 
@@ -135,13 +209,19 @@ public enum SelectedStop: Hashable, Sendable, Identifiable {
         switch self {
         case .bus: .bus
         case .metro: .metro
+        case .ctagr: .ctagr
         }
+    }
+
+    public var mapKind: TransportKind {
+        self.kind == .metro ? .metro : .bus
     }
 
     public var coordinate: CLLocationCoordinate2D? {
         switch self {
         case .bus(let stop): stop.coordinate
         case .metro(let stop): stop.coordinate
+        case .ctagr(let stop): stop.coordinate
         }
     }
 }
@@ -150,10 +230,11 @@ extension SelectedStop: Codable {
     private enum Kind: String, Codable {
         case bus
         case metro
+        case ctagr
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, bus, metro
+        case kind, bus, metro, ctagr
     }
 
     public init(from decoder: Decoder) throws {
@@ -163,6 +244,8 @@ extension SelectedStop: Codable {
             self = .bus(try container.decode(ParadaBus.self, forKey: .bus))
         case .metro:
             self = .metro(try container.decode(ParadaMetro.self, forKey: .metro))
+        case .ctagr:
+            self = .ctagr(try container.decode(ParadaCtagr.self, forKey: .ctagr))
         }
     }
 
@@ -175,6 +258,9 @@ extension SelectedStop: Codable {
         case .metro(let stop):
             try container.encode(Kind.metro, forKey: .kind)
             try container.encode(stop, forKey: .metro)
+        case .ctagr(let stop):
+            try container.encode(Kind.ctagr, forKey: .kind)
+            try container.encode(stop, forKey: .ctagr)
         }
     }
 }

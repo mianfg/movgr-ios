@@ -7,43 +7,111 @@ struct MovGRShareSheet: View {
     var payload: MovGRSharePayload
 
     var body: some View {
-        VStack(spacing: 18) {
-            Text("Compartir")
-                .font(.headline)
-                .padding(.top, 6)
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 12) {
+                contextGlyph
+                    .frame(width: 22, height: 22)
+                    .frame(width: 44, height: 44)
+                    .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            if let image = Self.qrImage(from: payload.url.absoluteString) {
-                Image(uiImage: image)
-                    .interpolation(.none)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 200, height: 200)
-                    .padding(14)
-                    .background(.white, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(contextKicker)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(contextTitle)
+                        .font(.headline)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text(payload.text)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            Group {
+                if let image = Self.qrImage(from: payload.url.absoluteString) {
+                    Image(uiImage: image)
+                        .interpolation(.none)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 152, height: 152)
+                        .padding(10)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .accessibilityLabel("Código QR")
+                }
+            }
+            .frame(maxWidth: .infinity)
 
             ShareLink(
                 item: payload.url,
                 subject: Text(payload.title),
                 message: Text(payload.text)
             ) {
-                Label("Compartir", systemImage: "square.and.arrow.up")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Compartir enlace")
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.plain)
+            .background(.fill.tertiary, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 28)
-        .presentationDetents([.medium])
+        .padding(.horizontal, 20)
+        .padding(.top, 28)
+        .padding(.bottom, 12)
+        .background {
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea()
+        }
+        .presentationDetents([.height(318)])
         .presentationDragIndicator(.visible)
-        .presentationCornerRadius(28)
+        .presentationBackground(.clear)
+    }
+
+    private var contextKicker: String {
+        switch payload.target {
+        case .app:
+            "Toda la app"
+        case .bus(let id, _):
+            "Parada \(id)"
+        case .metro(let name, let direction):
+            name == nil ? "Metro · \(direction.rawValue)" : "Estación · \(direction.rawValue)"
+        case .ctagr(let id, _):
+            "Consorcio \(id)"
+        }
+    }
+
+    private var contextTitle: String {
+        switch payload.target {
+        case .app:
+            "Buses y metro de Granada"
+        case .bus(_, let name):
+            name
+        case .metro(let name, let direction):
+            name ?? "Sentido \(direction.rawValue)"
+        case .ctagr(_, let name):
+            name
+        }
+    }
+
+    @ViewBuilder
+    private var contextGlyph: some View {
+        switch payload.target {
+        case .app:
+            Image("movgr-mark")
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+        case .bus:
+            BusFrontGlyph()
+        case .metro:
+            TramFrontGlyph()
+        case .ctagr:
+            BusFrontGlyph()
+                .foregroundStyle(BrandColor.ctagr)
+        }
     }
 
     static func qrImage(from string: String) -> UIImage? {

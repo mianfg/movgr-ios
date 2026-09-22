@@ -13,7 +13,7 @@ struct ArrivalLiveActivity: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     HStack(spacing: 6) {
-                        if let number = context.state.stopNumber {
+                        if context.state.kind != .ctagr, let number = context.state.stopNumber {
                             StopNumberPill(number: number, compact: true)
                         }
                         Text(context.state.stopName)
@@ -26,21 +26,33 @@ struct ArrivalLiveActivity: Widget {
                     if context.state.kind == .metro {
                         HStack(spacing: 4) {
                             MetroDirectionChevrons(down: context.state.metroChevronsDown, font: .caption.weight(.bold))
-                            MetroPills(minutes: context.state.selectedMetroMinutes, etas: context.state.selectedMetroETAs, isOnline: context.state.isOnline, compact: true)
+                            MetroPills(
+                                minutes: Array(context.state.selectedMetroMinutes.prefix(1)),
+                                etas: Array(context.state.selectedMetroETAs.prefix(1)),
+                                isOnline: context.state.isOnline,
+                                compact: true
+                            )
                         }
-                    } else if let minutes = context.state.soonestMinutes {
-                        TimeTag(minutes: minutes, eta: context.state.nextRow?.eta, isOnline: context.state.isOnline, compact: true)
+                    } else {
+                        HStack(spacing: 4) {
+                            if let row = context.state.nextRow {
+                                LineBadgeView(id: row.badge, colorHex: row.colorHex, textColorHex: row.textColorHex, size: 20)
+                                TimeTag(minutes: row.minutes, eta: row.eta, isOnline: context.state.isOnline, compact: true)
+                            } else if let line = context.state.preferredLineId {
+                                LineBadgeView(id: line, size: 20)
+                            }
+                        }
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     if context.state.kind == .metro {
                         MetroSplitTimes(state: context.state)
                     } else {
-                BusCompactRow(rows: Array(context.state.rows.prefix(3)), isOnline: context.state.isOnline)
+                        BusCompactRow(rows: Array(context.state.rows.prefix(2)), isOnline: context.state.isOnline, maxTimes: 2)
                     }
                 }
             } compactLeading: {
-                if context.state.kind == .bus {
+                if context.state.usesBusLayout {
                     if let row = context.state.nextRow {
                         LineBadgeView(id: row.badge, colorHex: row.colorHex, textColorHex: row.textColorHex, size: 20)
                     } else if let line = context.state.preferredLineId {
@@ -54,12 +66,19 @@ struct ArrivalLiveActivity: Widget {
                 }
             } compactTrailing: {
                 if context.state.kind == .metro {
-                    MetroPills(minutes: context.state.selectedMetroMinutes, etas: context.state.selectedMetroETAs, isOnline: context.state.isOnline, compact: true)
+                    MetroPills(
+                        minutes: Array(context.state.selectedMetroMinutes.prefix(1)),
+                        etas: Array(context.state.selectedMetroETAs.prefix(1)),
+                        isOnline: context.state.isOnline,
+                        compact: true
+                    )
+                } else if let row = context.state.nextRow {
+                    TimeTag(minutes: row.minutes, eta: row.eta, isOnline: context.state.isOnline, compact: true)
                 } else if let minutes = context.state.soonestMinutes {
-                    TimeTag(minutes: minutes, eta: context.state.nextRow?.eta, isOnline: context.state.isOnline, compact: true)
+                    TimeTag(minutes: minutes, eta: context.state.soonestETA, isOnline: context.state.isOnline, compact: true)
                 }
             } minimal: {
-                if context.state.kind == .bus {
+                if context.state.usesBusLayout {
                     if let row = context.state.nextRow {
                         LineBadgeView(id: row.badge, colorHex: row.colorHex, textColorHex: row.textColorHex, size: 18)
                     } else if let line = context.state.preferredLineId {
@@ -83,21 +102,22 @@ private struct LockScreenArrivalView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 8) {
                 Group {
-                    if state.kind == .bus {
-                        BusFrontGlyph()
-                    } else {
+                    if state.kind == .metro {
                         TramFrontGlyph()
+                    } else {
+                        BusFrontGlyph()
                     }
                 }
+                .foregroundStyle(state.kind == .ctagr ? BrandColor.ctagr : Color.primary)
                 .frame(width: 18, height: 18)
-                if let number = state.stopNumber {
+                if state.kind != .ctagr, let number = state.stopNumber {
                     StopNumberPill(number: number, compact: true)
                 }
                 Text(state.stopName)
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
-                Text(state.isOnline ? "En directo" : "Sin conexión")
+                Text(lockStatus(state))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(state.isOnline ? Color(hex: "10b981") : .yellow)
             }
@@ -105,14 +125,26 @@ private struct LockScreenArrivalView: View {
             if state.kind == .metro {
                 MetroSplitTimes(state: state)
             } else if state.rows.isEmpty {
-                Text(state.preferredLineId.map { "No hay llegadas de la línea \($0)" } ?? "No hay autobuses aproximándose")
+                Text(state.preferredLineId.map { "No hay salidas de la línea \($0)" } ?? emptyCopy(state))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                BusCompactRow(rows: Array(state.rows.prefix(3)), isOnline: state.isOnline)
+                BusCompactRow(rows: Array(state.rows.prefix(3)), isOnline: state.isOnline, maxTimes: 3)
             }
         }
     }
+}
+
+private func lockStatus(_ state: ArrivalActivityAttributes.ContentState) -> String {
+    if !state.isOnline { return "Sin conexión" }
+    if state.kind == .ctagr {
+        return state.subtitle
+    }
+    return "En directo"
+}
+
+private func emptyCopy(_ state: ArrivalActivityAttributes.ContentState) -> String {
+    state.kind == .ctagr ? "No hay expediciones próximas" : "No hay autobuses aproximándose"
 }
 
 private struct MetroSplitTimes: View {
@@ -129,8 +161,10 @@ private struct MetroSplitTimes: View {
         let selected = state.metroDirection == direction
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
-                TramFrontGlyph()
-                    .frame(width: 12, height: 12)
+                MetroDirectionChevrons(
+                    down: direction.chevronsPointDown(inverted: state.metroInverted),
+                    font: .caption2.weight(.bold)
+                )
                 Text(title)
                     .font(.caption.weight(.semibold))
             }
@@ -167,6 +201,7 @@ private struct MetroPills: View {
                     )
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 }
@@ -174,23 +209,34 @@ private struct MetroPills: View {
 private struct BusCompactRow: View {
     var rows: [ArrivalRow]
     var isOnline = true
+    var maxTimes = 3
 
     var body: some View {
         HStack(spacing: 10) {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 6) {
                     LineBadgeView(id: row.badge, colorHex: row.colorHex, textColorHex: row.textColorHex, size: 22)
-                    HStack(spacing: 4) {
-                        ForEach(Array(row.allMinutes.prefix(3).enumerated()), id: \.offset) { index, minutes in
-                            TimeTag(
-                                minutes: minutes,
-                                eta: index < row.allETAs.count ? row.allETAs[index] : nil,
-                                isOnline: isOnline,
-                                compact: true
-                            )
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 4) {
+                            ForEach(Array(row.allMinutes.prefix(maxTimes).enumerated()), id: \.offset) { index, minutes in
+                                TimeTag(
+                                    minutes: minutes,
+                                    eta: index < row.allETAs.count ? row.allETAs[index] : nil,
+                                    isOnline: isOnline,
+                                    compact: true
+                                )
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        if row.title.contains(":") {
+                            Text(row.title)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
             Spacer(minLength: 0)
         }
@@ -204,27 +250,36 @@ private struct TimeTag: View {
     var compact = false
 
     var body: some View {
-        Group {
-            if !isOnline, let eta, eta > Date.now.addingTimeInterval(1) {
-                Text(timerInterval: Date.now...eta, countsDown: true, showsHours: false)
-            } else {
-                Text(minutesLabel(minutes, compact: compact))
-            }
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            chrome(remainingMinutes(at: context.date))
         }
-        .font((compact ? Font.caption2 : Font.caption).weight(.semibold).monospacedDigit())
-        .padding(.horizontal, compact ? 5 : 8)
-        .padding(.vertical, compact ? 2 : 4)
-        .foregroundStyle(minutes <= 0 ? Color.white : Color.primary)
-        .background(minutes <= 0 ? Color.red : Color.secondary.opacity(0.18), in: Capsule())
-        .multilineTextAlignment(.center)
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
+    }
+
+    private func remainingMinutes(at date: Date) -> Int {
+        guard let eta else { return minutes }
+        let seconds = eta.timeIntervalSince(date)
+        if seconds <= 0 { return 0 }
+        return Int(seconds / 60)
+    }
+
+    private func chrome(_ remaining: Int) -> some View {
+        let imminent = remaining <= 0
+        return Text(minutesLabel(remaining))
+            .font((compact ? Font.caption2 : Font.caption).weight(.semibold).monospacedDigit())
+            .padding(.horizontal, imminent ? (compact ? 5 : 8) : 0)
+            .padding(.vertical, imminent ? (compact ? 2 : 4) : 0)
+            .foregroundStyle(imminent ? Color.white : Color.primary)
+            .background {
+                if imminent {
+                    Capsule().fill(Color.red)
+                }
+            }
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
     }
 }
 
-private func minutesLabel(_ minutes: Int, compact: Bool) -> String {
-    if compact {
-        return minutes <= 0 ? "<1" : "\(minutes)m"
-    }
-    return minutes <= 0 ? "< 1 min" : "\(minutes) min"
+private func minutesLabel(_ minutes: Int) -> String {
+    minutes <= 0 ? "<1min" : "\(minutes)min"
 }

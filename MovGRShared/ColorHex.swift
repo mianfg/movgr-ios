@@ -23,4 +23,6 @@ public extension Color {
 public enum BrandColor {
     public static let metro = Color(hex: "e11d48")
     public static let live = Color(red: 16 / 255, green: 185 / 255, blue: 129 / 255)
+    public static let ctagr = Color(hex: "15803d")
+    public static let ctagrFill = Color.white
 }

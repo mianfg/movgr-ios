@@ -9,7 +9,9 @@ final class ArrivalActivityManager {
 
     private var activity: Activity<ArrivalActivityAttributes>?
     private var pollTask: Task<Void, Never>?
+    private var tokenTask: Task<Void, Never>?
     private var currentStop: SelectedStop?
+    private var pushToken: String?
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var consecutiveFailures = 0
     private var isForeground = true
@@ -34,15 +36,29 @@ final class ArrivalActivityManager {
     func stopTracking() {
         pollTask?.cancel()
         pollTask = nil
+        tokenTask?.cancel()
+        tokenTask = nil
+        let token = pushToken
         currentStop = nil
+        pushToken = nil
         lastBusArrivals = nil
         lastBusStop = nil
-        Task { await endAllActivities() }
+        Task {
+            if let token {
+                await APIClient.shared.unsubscribeLiveActivity(token: token)
+            }
+            await endAllActivities()
+        }
     }
 
     func preferencesDidChange() {
         guard AppSettings.storedLiveActivityEnabled() else { return }
-        Task { await publishCurrent() }
+        Task {
+            await publishCurrent()
+            if let pushToken, let currentStop {
+                await registerPush(token: pushToken, stop: currentStop)
+            }
+        }
     }
 
     func ingestBusArrivals(_ arrivals: LlegadasBus, stop: ParadaBus, isOnline: Bool) async {
@@ -53,6 +69,15 @@ final class ArrivalActivityManager {
         await update(
             stop: .bus(stop),
             state: Self.busState(stop: stop, arrivals: arrivals, isOnline: isOnline)
+        )
+    }
+
+    func ingestCtagrArrivals(_ arrivals: LlegadasCtagr, stop: ParadaCtagr, isOnline: Bool) async {
+        currentStop = .ctagr(stop)
+        if isOnline { consecutiveFailures = 0 }
+        await update(
+            stop: .ctagr(stop),
+            state: Self.ctagrState(stop: stop, arrivals: arrivals, isOnline: isOnline)
         )
     }
 
@@ -88,9 +113,9 @@ final class ArrivalActivityManager {
 
     private func runLoop(for stop: SelectedStop) async {
         await publish(stop: stop)
-        while !Task.isCancelled, currentStop?.id == stop.id {
-            try? await Task.sleep(for: .seconds(12))
-            if Task.isCancelled { break }
+        while !Task.isCancelled, currentStop?.id == stop.id, pushToken == nil {
+            try? await Task.sleep(for: .seconds(20))
+            if Task.isCancelled || currentStop?.id != stop.id { break }
             await publish(stop: stop)
         }
     }
@@ -131,12 +156,15 @@ final class ArrivalActivityManager {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let content = ActivityContent(
             state: state,
-            staleDate: Date().addingTimeInterval(state.isOnline ? 40 : 120),
+            staleDate: Self.staleDate(for: state),
             relevanceScore: 100
         )
 
         if let existing = resolvedActivity(for: stop) {
             activity = existing
+            if tokenTask == nil {
+                listenForPushToken(existing, stop: stop)
+            }
             await existing.update(content)
             await endActivities(except: existing.id)
             return
@@ -147,14 +175,76 @@ final class ArrivalActivityManager {
             activity = try Activity.request(
                 attributes: ArrivalActivityAttributes(stopId: stop.id, kind: stop.kind),
                 content: content,
-                pushType: nil
+                pushType: .token
             )
+            listenForPushToken(activity, stop: stop)
         } catch {
-            if let fallback = liveActivities.first {
-                activity = fallback
-                await fallback.update(content)
+            do {
+                activity = try Activity.request(
+                    attributes: ArrivalActivityAttributes(stopId: stop.id, kind: stop.kind),
+                    content: content,
+                    pushType: nil
+                )
+            } catch {
+                if let fallback = liveActivities.first {
+                    activity = fallback
+                    await fallback.update(content)
+                }
             }
         }
+    }
+
+    private func listenForPushToken(_ activity: Activity<ArrivalActivityAttributes>?, stop: SelectedStop) {
+        guard let activity else { return }
+        tokenTask?.cancel()
+        tokenTask = Task { [weak self] in
+            for await data in activity.pushTokenUpdates {
+                guard let self, !Task.isCancelled else { break }
+                let hex = data.map { String(format: "%02x", $0) }.joined()
+                pushToken = hex
+                await registerPush(token: hex, stop: stop)
+            }
+        }
+    }
+
+    private func registerPush(token: String, stop: SelectedStop) async {
+        #if DEBUG
+        let environment = "sandbox"
+        #else
+        let environment = "production"
+        #endif
+        let stopId: String
+        let preferred: String?
+        let direction: String?
+        let inverted: Bool
+        switch stop {
+        case .bus(let parada):
+            stopId = "\(parada.id)"
+            preferred = AppSettings.storedPreferredLine(forBusStopId: parada.id)
+            direction = nil
+            inverted = false
+        case .metro(let parada):
+            stopId = parada.id
+            preferred = nil
+            direction = AppSettings.storedMetroDirection().rawValue
+            inverted = AppSettings.storedMetroInverted()
+        case .ctagr(let parada):
+            stopId = parada.id
+            preferred = AppSettings.storedPreferredLine(forCtagrStopId: parada.id)
+            direction = nil
+            inverted = false
+        }
+        await APIClient.shared.subscribeLiveActivity(
+            LiveSubscribeBody(
+                token: token,
+                environment: environment,
+                kind: stop.kind.rawValue,
+                stopId: stopId,
+                preferredLineId: preferred,
+                metroDirection: direction,
+                metroInverted: inverted
+            )
+        )
     }
 
     private func resolvedActivity(for stop: SelectedStop) -> Activity<ArrivalActivityAttributes>? {
@@ -215,6 +305,9 @@ final class ArrivalActivityManager {
         case .metro(let parada):
             let arrivals = try await metroArrivals(for: parada)
             return metroState(stop: parada, arrivals: arrivals, isOnline: true)
+        case .ctagr(let parada):
+            let arrivals = try await APIClient.shared.getCtagrArrivals(parada.id)
+            return ctagrState(stop: parada, arrivals: arrivals, isOnline: true)
         }
     }
 
@@ -278,6 +371,65 @@ final class ArrivalActivityManager {
         )
     }
 
+    static func ctagrState(
+        stop: ParadaCtagr,
+        arrivals: LlegadasCtagr,
+        isOnline: Bool
+    ) -> ArrivalActivityAttributes.ContentState {
+        let now = Date()
+        let preferred = AppSettings.storedPreferredLine(forCtagrStopId: stop.id)
+        let proximos = preferred.map { lineId in
+            arrivals.proximos.filter { $0.linea.id == lineId }
+        } ?? arrivals.proximos
+
+        var order: [String] = []
+        var lines: [String: LineaCtagr] = [:]
+        var minutesByLine: [String: [Int]] = [:]
+        var horaByLine: [String: String] = [:]
+        var enRutaByLine: [String: Bool] = [:]
+        for proximo in proximos {
+            let id = proximo.linea.id
+            if minutesByLine[id] == nil {
+                order.append(id)
+                lines[id] = proximo.linea
+                minutesByLine[id] = []
+                horaByLine[id] = proximo.hora
+                enRutaByLine[id] = false
+            }
+            minutesByLine[id, default: []].append(proximo.minutos)
+            enRutaByLine[id] = (enRutaByLine[id] ?? false) || proximo.enRuta
+        }
+
+        let anyLive = enRutaByLine.values.contains(true)
+        let rows = order.prefix(3).compactMap { id -> ArrivalRow? in
+            guard let linea = lines[id] else { return nil }
+            let times = (minutesByLine[id] ?? []).sorted().prefix(3)
+            guard let first = times.first else { return nil }
+            let rest = Array(times.dropFirst())
+            let hora = horaByLine[id] ?? ""
+            let live = enRutaByLine[id] == true ? " · en ruta" : ""
+            return ArrivalRow(
+                badge: linea.id,
+                colorHex: linea.color ?? "FFFFFF",
+                textColorHex: linea.textColor ?? "15803d",
+                title: hora.isEmpty ? linea.id : "\(hora)\(live)",
+                minutes: first,
+                eta: Self.eta(from: first, now: now),
+                additionalMinutes: rest,
+                additionalETAs: rest.map { Self.eta(from: $0, now: now) }
+            )
+        }
+        return .init(
+            stopName: stop.nombre,
+            subtitle: anyLive ? "Consorcio · en ruta" : "Consorcio · horario",
+            kind: .ctagr,
+            rows: Array(rows),
+            preferredLineId: preferred,
+            updatedAt: now,
+            isOnline: isOnline
+        )
+    }
+
     static func metroState(
         stop: ParadaMetro,
         arrivals: LlegadasMetro,
@@ -304,8 +456,17 @@ final class ArrivalActivityManager {
         )
     }
 
+    private static func staleDate(for state: ArrivalActivityAttributes.ContentState) -> Date {
+        let floor = Date().addingTimeInterval(state.isOnline ? 12 * 60 : 3 * 60)
+        guard let latest = state.latestETA else { return floor }
+        return max(latest.addingTimeInterval(90), floor)
+    }
+
     private static func eta(from minutes: Int, now: Date) -> Date {
-        now.addingTimeInterval(TimeInterval(max(minutes, 0) * 60 + (minutes <= 0 ? 45 : 0)))
+        if minutes <= 0 {
+            return now.addingTimeInterval(45)
+        }
+        return now.addingTimeInterval(TimeInterval(minutes * 60 + 59))
     }
 
     private static func etas(from minutes: [Int], now: Date) -> [Date] {

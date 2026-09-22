@@ -23,31 +23,44 @@ enum MapLayerFilter: String, CaseIterable, Identifiable {
     func includes(_ kind: TransportKind) -> Bool {
         switch self {
         case .all: true
-        case .bus: kind == .bus
+        case .bus: kind == .bus || kind == .ctagr
         case .metro: kind == .metro
         }
     }
 }
 
-enum HomeListOrder: String, CaseIterable, Identifiable {
-    case recentsFirst
-    case nearbyFirst
+enum SearchBrowseSection: String, Codable, CaseIterable, Identifiable, Hashable {
+    case favorites
+    case recents
+    case nearby
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .recentsFirst: "Recientes primero"
-        case .nearbyFirst: "Cercanas primero"
+        case .favorites: "Favoritos"
+        case .recents: "Recientes"
+        case .nearby: "Cercanas"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .recentsFirst: "Últimas paradas y estaciones consultadas"
-        case .nearbyFirst: "Lo más cerca de ti, si hay ubicación"
+        case .favorites: "Paradas y estaciones marcadas con estrella"
+        case .recents: "Últimas paradas y estaciones consultadas"
+        case .nearby: "Lo más cerca de ti, si hay ubicación"
         }
     }
+
+    var symbolName: String {
+        switch self {
+        case .favorites: "star.fill"
+        case .recents: "clock"
+        case .nearby: "location.fill"
+        }
+    }
+
+    static let defaultOrder: [SearchBrowseSection] = [.favorites, .recents, .nearby]
 }
 
 enum MapBaseStyle: String, CaseIterable, Identifiable {
@@ -98,8 +111,13 @@ final class AppSettings {
         static let preferredTransport = "movgr.preferredTransport"
         static let logoExpanded = "movgr.logoExpanded"
         static let recentStops = "movgr.recentStops"
+        static let searchBrowseOrder = "movgr.searchBrowseOrder"
+        static let collapsedSearchSections = "movgr.collapsedSearchSections"
         static let homeListOrder = "movgr.homeListOrder"
         static let mapLayers = "movgr.mapLayers"
+        static let ctagrEnabled = "movgr.ctagrEnabled"
+        static let favoriteCtagrStops = "movgr.favoriteCtagrStops"
+        static let preferredCtagrLines = "movgr.preferredCtagrLines"
     }
 
     var metroInverted: Bool {
@@ -155,12 +173,28 @@ final class AppSettings {
         didSet { saveRecentStops() }
     }
 
-    var homeListOrder: HomeListOrder {
-        didSet { UserDefaults.standard.set(homeListOrder.rawValue, forKey: Keys.homeListOrder) }
+    var searchBrowseOrder: [SearchBrowseSection] {
+        didSet { saveSearchBrowseOrder() }
+    }
+
+    var collapsedSearchSections: Set<SearchBrowseSection> {
+        didSet { saveCollapsedSearchSections() }
     }
 
     var mapLayers: MapLayerFilter {
         didSet { UserDefaults.standard.set(mapLayers.rawValue, forKey: Keys.mapLayers) }
+    }
+
+    var ctagrEnabled: Bool {
+        didSet { UserDefaults.standard.set(ctagrEnabled, forKey: Keys.ctagrEnabled) }
+    }
+
+    var favoriteCtagrStops: [ParadaCtagr] {
+        didSet { saveCtagrFavorites() }
+    }
+
+    var preferredCtagrLines: [String: String] {
+        didSet { UserDefaults.standard.set(preferredCtagrLines, forKey: Keys.preferredCtagrLines) }
     }
 
     var transportOrder: [TransportKind] {
@@ -173,6 +207,10 @@ final class AppSettings {
 
     var favoriteMetroIds: Set<String> {
         Set(favoriteMetroStops.map(\.id))
+    }
+
+    var favoriteCtagrIds: Set<String> {
+        Set(favoriteCtagrStops.map(\.id))
     }
 
     init() {
@@ -195,6 +233,14 @@ final class AppSettings {
         } else {
             favoriteMetroStops = []
         }
+        if let data = UserDefaults.standard.data(forKey: Keys.favoriteCtagrStops),
+           let stops = try? JSONDecoder().decode([ParadaCtagr].self, from: data) {
+            favoriteCtagrStops = stops
+        } else {
+            favoriteCtagrStops = []
+        }
+        ctagrEnabled = UserDefaults.standard.bool(forKey: Keys.ctagrEnabled)
+        preferredCtagrLines = UserDefaults.standard.dictionary(forKey: Keys.preferredCtagrLines) as? [String: String] ?? [:]
         if UserDefaults.standard.object(forKey: Keys.liveActivityEnabled) == nil {
             liveActivityEnabled = true
         } else {
@@ -221,12 +267,8 @@ final class AppSettings {
         } else {
             recentStops = []
         }
-        if let raw = UserDefaults.standard.string(forKey: Keys.homeListOrder),
-           let order = HomeListOrder(rawValue: raw) {
-            homeListOrder = order
-        } else {
-            homeListOrder = .recentsFirst
-        }
+        searchBrowseOrder = Self.loadSearchBrowseOrder()
+        collapsedSearchSections = Self.loadCollapsedSearchSections()
         if let raw = UserDefaults.standard.string(forKey: Keys.mapLayers),
            let layers = MapLayerFilter(rawValue: raw) {
             mapLayers = layers
@@ -237,7 +279,8 @@ final class AppSettings {
 
     static func storedPreferredTransport() -> TransportKind {
         if let raw = UserDefaults.standard.string(forKey: Keys.preferredTransport),
-           let kind = TransportKind(rawValue: raw) {
+           let kind = TransportKind(rawValue: raw),
+           kind == .bus || kind == .metro {
             return kind
         }
         return .bus
@@ -267,8 +310,17 @@ final class AppSettings {
         return lines["\(stopId)"]
     }
 
+    static func storedPreferredLine(forCtagrStopId stopId: String) -> String? {
+        let lines = UserDefaults.standard.dictionary(forKey: Keys.preferredCtagrLines) as? [String: String] ?? [:]
+        return lines[stopId]
+    }
+
     func preferredLine(for stop: ParadaBus) -> String? {
         preferredBusLines["\(stop.id)"]
+    }
+
+    func preferredLine(for stop: ParadaCtagr) -> String? {
+        preferredCtagrLines[stop.id]
     }
 
     func togglePreferredLine(_ lineId: String, for stop: ParadaBus) {
@@ -283,12 +335,27 @@ final class AppSettings {
         ArrivalActivityManager.shared.preferencesDidChange()
     }
 
+    func togglePreferredLine(_ lineId: String, for stop: ParadaCtagr) {
+        var next = preferredCtagrLines
+        if next[stop.id] == lineId {
+            next.removeValue(forKey: stop.id)
+        } else {
+            next[stop.id] = lineId
+        }
+        preferredCtagrLines = next
+        ArrivalActivityManager.shared.preferencesDidChange()
+    }
+
     func isFavorite(_ stop: ParadaBus) -> Bool {
         favoriteBusStops.contains { $0.id == stop.id }
     }
 
     func isFavorite(_ stop: ParadaMetro) -> Bool {
         favoriteMetroStops.contains { $0.id == stop.id }
+    }
+
+    func isFavorite(_ stop: ParadaCtagr) -> Bool {
+        favoriteCtagrStops.contains { $0.id == stop.id }
     }
 
     func toggleFavorite(_ stop: ParadaBus) {
@@ -304,6 +371,14 @@ final class AppSettings {
             favoriteMetroStops.remove(at: index)
         } else {
             favoriteMetroStops.append(stop)
+        }
+    }
+
+    func toggleFavorite(_ stop: ParadaCtagr) {
+        if let index = favoriteCtagrStops.firstIndex(where: { $0.id == stop.id }) {
+            favoriteCtagrStops.remove(at: index)
+        } else {
+            favoriteCtagrStops.append(stop)
         }
     }
 
@@ -330,4 +405,60 @@ final class AppSettings {
             UserDefaults.standard.set(data, forKey: Keys.favoriteMetroStops)
         }
     }
+
+    private func saveCtagrFavorites() {
+        if let data = try? JSONEncoder().encode(favoriteCtagrStops) {
+            UserDefaults.standard.set(data, forKey: Keys.favoriteCtagrStops)
+        }
+    }
+
+    func moveSearchBrowse(from source: IndexSet, to destination: Int) {
+        var next = searchBrowseOrder
+        next.move(fromOffsets: source, toOffset: destination)
+        searchBrowseOrder = next
+    }
+
+    func isSearchSectionCollapsed(_ section: SearchBrowseSection) -> Bool {
+        collapsedSearchSections.contains(section)
+    }
+
+    func toggleSearchSectionCollapsed(_ section: SearchBrowseSection) {
+        var next = collapsedSearchSections
+        if next.contains(section) {
+            next.remove(section)
+        } else {
+            next.insert(section)
+        }
+        collapsedSearchSections = next
+    }
+
+    private func saveSearchBrowseOrder() {
+        UserDefaults.standard.set(searchBrowseOrder.map(\.rawValue), forKey: Keys.searchBrowseOrder)
+    }
+
+    private func saveCollapsedSearchSections() {
+        UserDefaults.standard.set(collapsedSearchSections.map(\.rawValue), forKey: Keys.collapsedSearchSections)
+    }
+
+    private static func loadSearchBrowseOrder() -> [SearchBrowseSection] {
+        if let raw = UserDefaults.standard.array(forKey: Keys.searchBrowseOrder) as? [String] {
+            let parsed = raw.compactMap(SearchBrowseSection.init(rawValue:))
+            let missing = SearchBrowseSection.defaultOrder.filter { !parsed.contains($0) }
+            if !parsed.isEmpty { return parsed + missing }
+        }
+        if UserDefaults.standard.string(forKey: Keys.homeListOrder) == HomeListOrderLegacy.nearbyFirst.rawValue {
+            return [.nearby, .favorites, .recents]
+        }
+        return SearchBrowseSection.defaultOrder
+    }
+
+    private static func loadCollapsedSearchSections() -> Set<SearchBrowseSection> {
+        let raw = UserDefaults.standard.array(forKey: Keys.collapsedSearchSections) as? [String] ?? []
+        return Set(raw.compactMap(SearchBrowseSection.init(rawValue:)))
+    }
+}
+
+private enum HomeListOrderLegacy: String {
+    case recentsFirst
+    case nearbyFirst
 }

@@ -28,7 +28,10 @@ final class DeepLinkRouter {
         kind: inout TransportKind,
         selectedStop: inout SelectedStop?
     ) -> Bool {
-        kind = link.kind
+        kind = link.kind == .ctagr ? .bus : link.kind
+        if link.kind == .ctagr {
+            settings.ctagrEnabled = true
+        }
         if let direction = link.metroDirection {
             settings.metroDirection = direction
         }
@@ -42,6 +45,11 @@ final class DeepLinkRouter {
             if let id = link.metroStopId {
                 guard let stop = store.metroStops.first(where: { $0.id == id }) else { return false }
                 selectedStop = .metro(stop)
+            }
+        case .ctagr:
+            if let id = link.ctagrStopId {
+                guard let stop = store.ctagrStops.first(where: { $0.id == id }) else { return false }
+                selectedStop = .ctagr(stop)
             }
         }
         return true

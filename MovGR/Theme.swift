@@ -5,12 +5,23 @@ struct MinutesBadge: View {
     var minutes: Int
 
     var body: some View {
-        Text(minutes <= 0 ? "< 1 min" : "\(minutes) min")
-            .font(.caption.weight(.semibold))
+        Text(Self.label(minutes))
+            .font(.caption.weight(.semibold).monospacedDigit())
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .foregroundStyle(minutes <= 0 ? Color.white : Color.primary)
             .background(minutes <= 0 ? Color.red : Color.secondary.opacity(0.18), in: Capsule())
+            .layoutPriority(1)
+    }
+
+    static func label(_ minutes: Int, compact: Bool = false) -> String {
+        let nbsp = "\u{00A0}"
+        if compact {
+            return minutes <= 0 ? "<1" : "\(minutes)m"
+        }
+        return minutes <= 0 ? "<1\(nbsp)min" : "\(minutes)\(nbsp)min"
     }
 }
 

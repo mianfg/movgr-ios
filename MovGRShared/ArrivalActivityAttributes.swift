@@ -49,9 +49,35 @@ public struct ArrivalRow: Codable, Hashable, Sendable {
         textColorHex = try container.decode(String.self, forKey: .textColorHex)
         title = try container.decode(String.self, forKey: .title)
         minutes = try container.decode(Int.self, forKey: .minutes)
-        eta = try container.decode(Date.self, forKey: .eta)
         additionalMinutes = try container.decodeIfPresent([Int].self, forKey: .additionalMinutes) ?? []
-        additionalETAs = try container.decodeIfPresent([Date].self, forKey: .additionalETAs) ?? []
+        additionalETAs = Self.decodeUnixDates(container, forKey: .additionalETAs)
+        eta = try Self.decodeUnixDate(container, forKey: .eta)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(badge, forKey: .badge)
+        try container.encode(colorHex, forKey: .colorHex)
+        try container.encode(textColorHex, forKey: .textColorHex)
+        try container.encode(title, forKey: .title)
+        try container.encode(minutes, forKey: .minutes)
+        try container.encode(eta.timeIntervalSince1970, forKey: .eta)
+        try container.encode(additionalMinutes, forKey: .additionalMinutes)
+        try container.encode(additionalETAs.map(\.timeIntervalSince1970), forKey: .additionalETAs)
+    }
+
+    fileprivate static func decodeUnixDate(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) throws -> Date {
+        if let value = try? container.decode(Double.self, forKey: key) {
+            return Date(timeIntervalSince1970: value)
+        }
+        return try container.decode(Date.self, forKey: key)
+    }
+
+    fileprivate static func decodeUnixDates(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> [Date] {
+        if let values = try? container.decode([Double].self, forKey: key) {
+            return values.map { Date(timeIntervalSince1970: $0) }
+        }
+        return (try? container.decode([Date].self, forKey: key)) ?? []
     }
 }
 
@@ -120,12 +146,32 @@ public struct ArrivalActivityAttributes: ActivityAttributes {
 
         public var soonestMinutes: Int? {
             switch kind {
-            case .bus:
+            case .bus, .ctagr:
                 return rows.flatMap(\.allMinutes).min()
             case .metro:
                 return selectedMetroMinutes.min()
             }
         }
+
+        public var soonestETA: Date? {
+            switch kind {
+            case .bus, .ctagr:
+                return rows.flatMap(\.allETAs).min()
+            case .metro:
+                return selectedMetroETAs.min()
+            }
+        }
+
+        public var latestETA: Date? {
+            switch kind {
+            case .bus, .ctagr:
+                return rows.flatMap(\.allETAs).max()
+            case .metro:
+                return (armillaETAs + alboloteETAs).max()
+            }
+        }
+
+        public var usesBusLayout: Bool { kind != .metro }
 
         enum CodingKeys: String, CodingKey {
             case stopName, subtitle, kind, rows
@@ -141,14 +187,46 @@ public struct ArrivalActivityAttributes: ActivityAttributes {
             rows = try container.decodeIfPresent([ArrivalRow].self, forKey: .rows) ?? []
             armillaMinutes = try container.decodeIfPresent([Int].self, forKey: .armillaMinutes) ?? []
             alboloteMinutes = try container.decodeIfPresent([Int].self, forKey: .alboloteMinutes) ?? []
-            armillaETAs = try container.decodeIfPresent([Date].self, forKey: .armillaETAs) ?? []
-            alboloteETAs = try container.decodeIfPresent([Date].self, forKey: .alboloteETAs) ?? []
+            armillaETAs = Self.decodeUnixDates(container, forKey: .armillaETAs)
+            alboloteETAs = Self.decodeUnixDates(container, forKey: .alboloteETAs)
             metroDirection = try container.decodeIfPresent(DireccionMetro.self, forKey: .metroDirection) ?? .armilla
             metroInverted = try container.decodeIfPresent(Bool.self, forKey: .metroInverted) ?? false
             preferredLineId = try container.decodeIfPresent(String.self, forKey: .preferredLineId)
             stopNumber = try container.decodeIfPresent(Int.self, forKey: .stopNumber)
-            updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+            updatedAt = Self.decodeUnixDate(container, forKey: .updatedAt) ?? Date()
             isOnline = try container.decodeIfPresent(Bool.self, forKey: .isOnline) ?? true
+        }
+
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(stopName, forKey: .stopName)
+            try container.encode(subtitle, forKey: .subtitle)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(rows, forKey: .rows)
+            try container.encode(armillaMinutes, forKey: .armillaMinutes)
+            try container.encode(alboloteMinutes, forKey: .alboloteMinutes)
+            try container.encode(armillaETAs.map(\.timeIntervalSince1970), forKey: .armillaETAs)
+            try container.encode(alboloteETAs.map(\.timeIntervalSince1970), forKey: .alboloteETAs)
+            try container.encode(metroDirection, forKey: .metroDirection)
+            try container.encode(metroInverted, forKey: .metroInverted)
+            try container.encodeIfPresent(preferredLineId, forKey: .preferredLineId)
+            try container.encodeIfPresent(stopNumber, forKey: .stopNumber)
+            try container.encode(updatedAt.timeIntervalSince1970, forKey: .updatedAt)
+            try container.encode(isOnline, forKey: .isOnline)
+        }
+
+        private static func decodeUnixDate(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> Date? {
+            if let value = try? container.decode(Double.self, forKey: key) {
+                return Date(timeIntervalSince1970: value)
+            }
+            return try? container.decode(Date.self, forKey: key)
+        }
+
+        private static func decodeUnixDates(_ container: KeyedDecodingContainer<CodingKeys>, forKey key: CodingKeys) -> [Date] {
+            if let values = try? container.decode([Double].self, forKey: key) {
+                return values.map { Date(timeIntervalSince1970: $0) }
+            }
+            return (try? container.decode([Date].self, forKey: key)) ?? []
         }
     }
 
